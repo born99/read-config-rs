@@ -1,5 +1,5 @@
-use crate::{data::FileFormats, json, toml, yaml};
-use std::io::Read;
+use crate::{data::{FileFormats, Error}, formats};
+use std::{io::Read, collections::HashMap};
 
 pub fn read_file_content(filename: &str) -> Option<String> {
 	let mut file = std::fs::File::open(filename).expect("Something went wrong!");
@@ -11,39 +11,59 @@ pub fn read_file_content(filename: &str) -> Option<String> {
 	Some(contents)
 }
 
-pub fn get_type_format(filename: &str) -> FileFormats {
+pub fn get_type_format(filename: &str) -> Result<FileFormats, Error> {
 	let file_ending = filename.split_terminator('.').last().unwrap_or_default();
 
 	match file_ending {
-		"json" => FileFormats::Json,
-		"toml" => FileFormats::Toml,
-		"yaml" | "yml" => FileFormats::Yaml,
-		_ => panic!("Type of the file could not be inferred"),
+		"json" => Ok(FileFormats::Json),
+		"toml" => Ok(FileFormats::Toml),
+		"yaml" | "yml" => Ok(FileFormats::Yaml),
+		"env" => Ok(FileFormats::Env),
+		_ => Err(Error::UnsupportedFormat),
 	}
 }
 
-pub fn read_configurations<T>(filename: &str) -> Result<T, &'static str>
+pub fn read_configurations<T>(filename: &str) -> Result<T, Error>
 where
 	T: serde::de::DeserializeOwned + Default,
 {
-	let contents = read_file_content(filename).expect("Cannot read file content!");
-	let file_type = get_type_format(filename);
+	let contents = read_file_content(filename);
+	if contents.is_none() {
+		return Err(Error::IOError);
+	}
+	let contents = contents.unwrap();
+
+	let file_type = get_type_format(filename)?;
 
 	let result = match file_type {
-        FileFormats::Json => json::deserialize::<T>(&contents),
-        FileFormats::Toml => toml::deserialize::<T>(&contents),
-        FileFormats::Yaml => yaml::deserialize::<T>(&contents),
-        _  => return Err("It is not supported at the moments. You can use other tools to convert file to supported formats to continue")
+        FileFormats::Json => formats::json::deserialize::<T>(&contents)?,
+        FileFormats::Toml => formats::toml::deserialize::<T>(&contents)?,
+        FileFormats::Yaml => formats::yaml::deserialize::<T>(&contents)?,
+		FileFormats::Env => {
+			dotenv().ok();
+
+			let mut a = HashMap::new();
+			let vars = contents.split_once("=")
+				.map(|(key, value)| a.insert(key, value));
+
+			// dbg!(&vars);	
+
+			let a = serde_json::to_string(&a).unwrap();
+			dbg!(&a);
+
+			// let contents =  serde_json::to_string(&content).unwrap();
+
+			formats::json::deserialize::<T>(&a)?
+		},
+        _  => return Err(Error::UnsupportedFormat)
     };
 
-	result
+	Ok(result)
 }
 
 macro_rules! deserializing {
 	($id:ident) => {
-		pub use $id::Value;
-
-		pub(crate) fn deserialize<T>(string_data: &str) -> Result<T, &'static str>
+		pub(crate) fn deserialize<T>(string_data: &str) -> Result<T, crate::data::Error>
 		where
 			T: serde::de::DeserializeOwned + Default,
 		{
@@ -53,7 +73,7 @@ macro_rules! deserializing {
 
 			let new_data = $id::from_str(string_data);
 			if new_data.is_err() {
-				return Err("Invalid data");
+				return Err(crate::data::Error::InvalidData);
 			}
 			let new_data = new_data.unwrap();
 
@@ -63,3 +83,4 @@ macro_rules! deserializing {
 }
 
 pub(crate) use deserializing;
+use dotenv::dotenv;

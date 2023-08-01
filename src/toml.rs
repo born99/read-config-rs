@@ -1,1 +1,0 @@
-crate::func::deserializing!(toml);
